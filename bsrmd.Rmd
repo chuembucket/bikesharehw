@@ -1,0 +1,17 @@
+---
+title: "Bike Share Prediction"
+author: "Charlie Huemmler"
+date: "2022-11-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In 2015, Indego, Philadelphia's bike share program, was launched, bringing another convenient mode of transportation to the city. Indego subscribers can ride the public bicycles between any of the 130+ stations in the city, locking and unlocking them at either end of the trip. Each station has a limited amount of docks, so sometimes Indego runs into the issue where a station is full and no more bikes can be locked, or the station is empty and no bikes can be unlocked. While in a one-off situation the customer can find the nearest station that has a bike or open dock, if Indego is to serve consistent travel patterns, customers need to be able to rely on the system to have bikes at their start and empty docks at their end.
+
+In order to rebalance the amount of bikes in each station, Indego deploys two strategies. First, they use a fleet of sprinter vans and employees to physically move bikes from where there are many to where there are few. This works well to alleviate pressure but can be cumbersome and costly. The second rebalancing tactic is the IndeHero program. Customers receive points for starting a ride at a full station and ending a ride at an empty station. This creates an open dock or leaves a bike for someone who otherwise may not have had one and would have to search for a nearby station. Once enough points are accrued, they are redeemed for extra subscription time, thus saving the customer money. 
+
+These tactics could deployed reactively, that is, once a dock is too full or empty, sending out a rebalancing van and/or offering the IndeHero points. However, with the large amount of historical ridership data, as well as data on weather and a few other factors, we can predict the amount of bikes at a station at a given time and proactively deploy these resources. This analysis attempts to predict the amount of bikes at a station one hour ahead, in order to give reccomendations for rebalancing deployment.
+
