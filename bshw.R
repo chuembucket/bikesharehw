@@ -20,9 +20,10 @@ palette4 <- c("#D2FBD4","#92BCAB","#527D82","#123F5A")
 palette2 <- c("#6baed6","#08519c")
 
 ##collect indego rides
-rides <- read.csv("C:/Users/cchue/Documents/GIS/5thSq/IndegoMap/RideData/indego-trips-2016-q1.csv")
 
-cd <- "C:/Users/cchue/Documents/GIS/5thSq/IndegoMap/RideData/indego-trips"
+rides <- read.csv("C:/Users/Charlie/Documents/GIS/5thSq/IndegoMap/RideData/indego-trips-2016-q1.csv")
+
+cd <- "C:/Users/Charlie/Documents/GIS/5thSq/IndegoMap/RideData/indego-trips"
 years <- c("2022")
 qs <- c("q2")
 
@@ -61,7 +62,7 @@ statlatlong <- statlatlong[!duplicated(statlatlong),]
 statlatlong <- statlatlong %>% rename('Station_ID' = 'df.start_station',
                                       'lat'='df.start_lat',
                                       'lon'='df.start_lon')
-stations <- read.csv("C:/Users/cchue/Documents/GIS/5thSq/IndegoMap/indego-stations-2021-07-01.csv")
+stations <- read.csv("C:/Users/Charlie/Documents/GIS/5thSq/IndegoMap/indego-stations-2021-07-01.csv")
 
 
 #statlatlong$Station_ID <- statlatlong$Station_ID %>% as.numeric()
@@ -87,6 +88,7 @@ for(i in 1:184){
                      stats_geojson$features[[i]]$properties$name)
 }
 
+
 stats <- left_join(stats, statdocks, by = c('Station_Name' = 'station_name'))
 
 
@@ -109,13 +111,13 @@ indegofull <- left_join(indegofull, stats, by = c('start_station' = 'Station_ID'
 indegofull <- rename(indegofull, start_station_name = 'Station_Name')
 
 indegofull <- left_join(indegofull, stats %>%
-                           st_drop_geometry() %>% 
-                           select('Station_ID', 'Station_Name'),
-                         by = c('end_station' = 'Station_ID'))
+                          st_drop_geometry() %>% 
+                          select('Station_ID', 'Station_Name'),
+                        by = c('end_station' = 'Station_ID'))
 
 indegofull <- rename(indegofull, end_station_name = 'Station_Name')
 
-  
+
 
 indego5week <- indegofull %>% filter(year == 2022 & week %in% seq(15,19) & endweek  %in% seq(15,19))
 
@@ -139,7 +141,7 @@ length(unique(indego5week$start_station_name)) * length(unique(indego5week$start
 
 study.panel <- 
   expand.grid(hour_unit = unique(indego5week$start_time_60 ), 
-               station_name = unique(indego5week$end_station_name))
+              station_name = unique(indego5week$end_station_name))
 
 nrow(study.panel)      
 
@@ -163,7 +165,14 @@ bike.panel.ends <-
          'station_name' = end_station_name)
 
 
-bike.panel <- left_join(bike.panel.starts,bike.panel.ends)
+bike.panel <- left_join(bike.panel.starts,bike.panel.ends) %>% filter(!station_name %>% is.na())
+
+bike.panel <- left_join(bike.panel, statdocks) %>% 
+  mutate(totaldocks = as.numeric(totaldocks))
+
+  
+bike.panel$totaldocks <- ifelse(is.na(bike.panel$totaldocks), median(bike.panel$totaldocks, na.rm = T), bike.panel$totaldocks)
+
 
 bike.panel$net <- bike.panel$start_count - bike.panel$end_count
 bike.panel$total <- bike.panel$start_count + bike.panel$end_count
@@ -171,13 +180,13 @@ bike.panel$total <- bike.panel$start_count + bike.panel$end_count
 bike.panel <- 
   bike.panel %>% 
   arrange(station_name, hour_unit)
- 
+
 bike.panel$net_over_time <- seq(0,1,nrow(bike.panel))
 for(i in 2:nrow(bike.panel)){
   if(bike.panel$station_name[i] != bike.panel$station_name[i-1]){
     bike.panel$net_over_time[i] <- bike.panel$net[i]
   } else {
-  bike.panel$net_over_time[i] <- bike.panel$net_over_time[i-1] + bike.panel$net[i]
+    bike.panel$net_over_time[i] <- bike.panel$net_over_time[i-1] + bike.panel$net[i]
   }
 }
 
@@ -191,25 +200,55 @@ for(i in 2:nrow(bike.panel)){
 }
 
 
+bike.panel$bikes_at_stat <- rep(NA,1,nrow(bike.panel))
+bike.panel$bikes_at_stat[1] <- 10 
+bike.panel$van_deployed <- rep('none',1,nrow(bike.panel))
+for(i in 2:nrow(bike.panel)){
+  if(bike.panel$station_name[i] != bike.panel$station_name[i-1]){
+    bike.panel$bikes_at_stat[i] <- ceiling(bike.panel$totaldocks[i] / 2) 
+  } else if(bike.panel$bikes_at_stat[i-1] > bike.panel$totaldocks[i]) { #if station is full
+    bike.panel$bikes_at_stat[i] <- ceiling(bike.panel$totaldocks[i]/4)*3
+    bike.panel$van_deployed[i] <- "take"
+  } else if(bike.panel$bikes_at_stat[i-1] < 2) { #if station is empty
+    bike.panel$bikes_at_stat[i] <- ceiling(bike.panel$totaldocks[i]/4)
+    bike.panel$van_deployed[i] <- "leave"  
+  } else {
+    bike.panel$bikes_at_stat[i] <- bike.panel$bikes_at_stat[i-1] + bike.panel$total[i]
+    bike.panel$van_deployed[i] <- 'none'
+  }
+}
+
+
+f<-bike.panel %>%
+  filter(station_name %in% sample(bike.panel$station_name %>% unique(), 5)) %>% 
+  group_by(hour_unit, station_name) %>% 
+  summarize(bikes_at_stat = bikes_at_stat, statname = station_name, van_deployed = van_deployed) %>% 
+  ungroup() 
+
+#f$statname <- factor(f$statname, levels=h %>% filter(stats5 == 'y') %>% pull(station_name))
+
+f <- bike.panel %>%
+  filter(station_name %in% sample(bike.panel$station_name %>% unique(), 5)) %>% droplevels()
+f$station_name <- factor(f$station_name)
+
+ggplot(f,aes(hour_unit,bikes_at_stat)) + geom_line() +
+  scale_colour_manual(values = c('red', 'green','blue')) + 
+  #geom_vline(data = mondays, aes(xintercept = monday)) +
+  facet_wrap(~as.character(station_name), ncol =1, scales = 'free')+
+  labs(#title="Rideshare trips by week: November-December",
+    #subtitle="Dotted lines for Thanksgiving & Christmas", 
+    x="Starts per Hour", y="") +
+  plotTheme() + theme(panel.grid.major = element_blank())    
 
 
 
-  group_by(Station_Name) %>% 
-  mutate(lagHour = dplyr::lag(Trip_Count,1),
-         lag2Hours = dplyr::lag(Trip_Count,2),
-         lag3Hours = dplyr::lag(Trip_Count,3),
-         lag4Hours = dplyr::lag(Trip_Count,4),
-         lag12Hours = dplyr::lag(Trip_Count,12),
-         lag1day = dplyr::lag(Trip_Count,24)) %>% 
-  ungroup()
 
+ # add weather features
 
-# add weather features
-  
-  ##weather
+##weather
 weather.Data <- 
   riem_measures(station = "PHL", date_start = "2021-01-01", date_end = "2021-12-12")
-  
+
 weather.Panel <-  
   weather.Data %>%
   mutate_if(is.character, list(~replace(as.character(.), is.na(.), "0"))) %>% 
@@ -222,21 +261,21 @@ weather.Panel <-
             Percipitation = sum(p01i),
             Wind_Speed = max(sknt)) %>%
   mutate(Temperature = ifelse(Temperature == 0, 42, Temperature))
-  
-  grid.arrange(top = "Weather Data - Chicago - November & December, 2018",
-               ggplot(weather.Panel, aes(interval60,Percipitation)) + geom_line() + 
-                 labs(title="Percipitation", x="Hour", y="Percipitation") + plotTheme(),
-               ggplot(weather.Panel, aes(interval60,Wind_Speed)) + geom_line() + 
-                 labs(title="Wind Speed", x="Hour", y="Wind Speed") + plotTheme(),
-               ggplot(weather.Panel, aes(interval60,Temperature)) + geom_line() + 
-                 labs(title="Temperature", x="Hour", y="Temperature") + plotTheme())
-  
 
-  
+grid.arrange(top = "Weather Data - Chicago - November & December, 2018",
+             ggplot(weather.Panel, aes(interval60,Percipitation)) + geom_line() + 
+               labs(title="Percipitation", x="Hour", y="Percipitation") + plotTheme(),
+             ggplot(weather.Panel, aes(interval60,Wind_Speed)) + geom_line() + 
+               labs(title="Wind Speed", x="Hour", y="Wind Speed") + plotTheme(),
+             ggplot(weather.Panel, aes(interval60,Temperature)) + geom_line() + 
+               labs(title="Temperature", x="Hour", y="Temperature") + plotTheme())
+
+
+
 bike.panel <- 
   bike.panel %>% 
-  left_join(weather.Panel, by = c('hour_unit' = 'interval60')) %>%
-  left_join(stats, by = c('station_name' = 'Station_Name')) %>%
+  #left_join(weather.Panel, by = c('hour_unit' = 'interval60')) %>%
+  left_join(stats %>% select(geometry, Station_Name), by = c('station_name' = 'Station_Name')) %>%
   mutate(week = week(hour_unit),
          dotw = wday(hour_unit, label = TRUE)) %>%
   st_sf()
@@ -257,8 +296,8 @@ bike.panel <-
 
 #split train/test
 
-bike.Train <- filter(bike.panel, week < 25)
-bike.Test <- filter(bike.panel, week >= 25)
+bike.Train <- filter(bike.panel, week < 18)
+bike.Test <- filter(bike.panel, week >= 18)
 
 mondays <- 
   mutate(bike.panel,
@@ -304,19 +343,19 @@ f<-st_drop_geometry(rbind(
   mutate(bike.Test, Legend = "Testing"))) %>%
   filter(station_name %in% c(h %>% filter(stats5 == 'y') %>% pull(station_name))) %>% 
   group_by(hour_unit, station_name) %>% 
-  summarize(start_count = sum(start_count), Legend = Legend, statname = station_name) %>% 
+  summarize(bikes_at_stat = bikes_at_stat, Legend = Legend, statname = station_name) %>% 
   ungroup() 
 
 f$statname <- factor(f$statname, levels=h %>% filter(stats5 == 'y') %>% pull(station_name))
-  
-  
-f1<-ggplot(f, aes(hour_unit,start_count, colour = Legend)) + geom_line() +
+
+
+ggplot(f, aes(hour_unit,bikes_at_stat, colour = Legend)) + geom_line() +
   scale_colour_manual(values = palette2) + 
   geom_vline(data = mondays, aes(xintercept = monday)) +
-  facet_wrap(~statname, ncol =1)+
+  facet_wrap(~statname, ncol =1, scales = 'free')+
   labs(#title="Rideshare trips by week: November-December",
-       #subtitle="Dotted lines for Thanksgiving & Christmas", 
-       x="Starts per Hour", y="") +
+    #subtitle="Dotted lines for Thanksgiving & Christmas", 
+    x="Starts per Hour", y="") +
   plotTheme() + theme(panel.grid.major = element_blank())    
 
 plot_grid(h1,f1)
@@ -411,7 +450,7 @@ reg1 <- lm(net ~  hour + dotw + Temperature, data=bike.Train)
 reg2 <- lm(net ~  station_name + dotw + Temperature, data=bike.Train)
 reg3 <- lm(net ~  station_name + hour + dotw + Temperature, data=bike.Train)
 reg4 <- lm(net ~  station_name + hour + dotw + Temperature + 
-           lagHour + lag2Hours + lag3Hours + lag12Hours + lag1day, data=bike.Train)
+             lagHour + lag2Hours + lag3Hours + lag12Hours + lag1day, data=bike.Train)
 
 bike.Test.weekNest <- 
   as.data.frame(bike.Test) %>%
@@ -527,7 +566,7 @@ reg1 <- lm(start_count ~  hour(hour_unit) + dotw + Temperature, data=bike.Train)
 #Neigborhood cross validation
 
 spatial.cv.vars <- bike.panel %>% st_drop_geometry() %>% select(hour, dotw, Temperature,
-                                                               sclagHour, sclag2Hours, sclag3Hours, sclag12Hours, sclag1day) %>% colnames()
+                                                                sclagHour, sclag2Hours, sclag3Hours, sclag12Hours, sclag1day) %>% colnames()
 
 
 spatial.cv <- crossValidate(
@@ -538,7 +577,7 @@ spatial.cv <- crossValidate(
   dplyr::select(cvID = station_name, start_count, Prediction, geometry)
 
 temporal.cv.vars <- bike.panel %>% st_drop_geometry() %>% select(station_name, hour, dotw, Temperature,
-                                                                sclagHour, sclag2Hours, sclag3Hours, sclag12Hours, sclag1day) %>% colnames()
+                                                                 sclagHour, sclag2Hours, sclag3Hours, sclag12Hours, sclag1day) %>% colnames()
 
 
 temporal.cv <- crossValidate(
@@ -573,6 +612,5 @@ error_by_reg_and_fold %>%
   labs(title="Distribution of MAE",
        x="Mean Absolute Error", y="Count") +
   plotTheme()
-
 
 
