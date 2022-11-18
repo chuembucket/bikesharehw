@@ -61,6 +61,8 @@ statlatlong <- statlatlong %>% rename('Station_ID' = 'df.start_station',
                                       'lat'='df.start_lat',
                                       'lon'='df.start_lon')
 stations <- read.csv("C:/Users/cchue/Documents/GIS/5thSq/IndegoMap/indego-stations-2021-07-01.csv")
+nhoods <- read_sf("C:/Users/cchue/Documents/GIS/PhillyData/Neighborhoods_Philadelphia.shp") %>%
+  st_transform(crs = 4326)
 
 #statlatlong$Station_ID <- statlatlong$Station_ID %>% as.numeric()
 stats <- left_join(x = stations, y = statlatlong)
@@ -69,6 +71,7 @@ stats <- stats %>% rename('dateopen' = "Day.of.Go_live_date")
 
 
 stats <- stats %>% filter(!is.na(lat)) %>% st_as_sf(coords = c('lon','lat'),crs = (4326))
+stats <- st_join(stats, nhoods)
 
 
 #get time frame
@@ -162,6 +165,17 @@ for(i in 2:nrow(bike.panel)){
   }
 }
 
+bike.panel$total_over_time <- seq(0,1,nrow(bike.panel))
+for(i in 2:nrow(bike.panel)){
+  if(bike.panel$station_name[i] != bike.panel$station_name[i-1]){
+    bike.panel$total_over_time[i] <- bike.panel$total[i]
+  } else {
+    bike.panel$total_over_time[i] <- bike.panel$total_over_time[i-1] + bike.panel$total[i]
+  }
+}
+
+
+
 
 
   group_by(Station_Name) %>% 
@@ -205,7 +219,7 @@ weather.Panel <-
   
 bike.panel <- 
   bike.panel %>% 
-  #left_join(weather.Panel, by = c('hour_unit' = 'interval60')) %>%
+  left_join(weather.Panel, by = c('hour_unit' = 'interval60')) %>%
   left_join(stats, by = c('station_name' = 'Station_Name')) %>%
   mutate(week = week(hour_unit),
          dotw = wday(hour_unit, label = TRUE)) %>%
@@ -216,13 +230,12 @@ bike.panel <-
 bike.panel <- 
   bike.panel %>% 
   arrange(station_name, hour_unit) %>% 
-  group_by(Station_Name) %>% 
-  mutate(lagHour = dplyr::lag(Trip_Count,1),
-         lag2Hours = dplyr::lag(Trip_Count,2),
-         lag3Hours = dplyr::lag(Trip_Count,3),
-         lag4Hours = dplyr::lag(Trip_Count,4),
-         lag12Hours = dplyr::lag(Trip_Count,12),
-         lag1day = dplyr::lag(Trip_Count,24)) %>% 
+  group_by(station_name) %>% 
+  mutate(sclagHour = dplyr::lag(start_count,1),
+         sclag2Hours = dplyr::lag(start_count,2),
+         sclag3Hours = dplyr::lag(start_count,3),
+         sclag12Hours = dplyr::lag(start_count,12),
+         sclag1day = dplyr::lag(start_count,24)) %>% 
   ungroup()
 
 
@@ -305,8 +318,8 @@ river <- area_water('PA', county = 'Philadelphia') %>%
   st_crop(y = st_bbox(stats))
 
 ggplot()+
-  geom_sf(data=river,color= NA, fill = 'blue')+
-  geom_sf(data=h, aes(color = net), size =3)+
+  geom_sf(data=river%>%  st_crop(y = bounds),color= NA, fill = 'blue')+
+  geom_sf(data=h %>%  st_crop(y = bounds), aes(color = net), size =3)+
   scale_color_gradient2(mid = 'grey')+
   mapTheme()
 
@@ -324,12 +337,13 @@ rideshare_animation <-
   mapTheme()
 
 
-bounds <- 
+bounds <- c(ymax = 39.98, ymin = 39.924, xmin =-75.211, xmax = -75.13)
+
 
 rideshare_animation_b <-
   ggplot() +
-  geom_sf(data=river,color= NA, fill = 'blue')+
-  geom_sf(data = anim.data, aes(color = net_over_time, size = log(net_over_time) )) +
+  geom_sf(data=river%>%  st_crop(y = bounds),color= NA, fill = 'blue')+
+  geom_sf(data = anim.data %>%  st_crop(y = bounds), aes(color = net_over_time, size = total_over_time)) +
   scale_color_gradient2(mid = 'grey')+
   labs(title = "",
        subtitle = "60 minute intervals: {current_frame}") +
@@ -354,4 +368,192 @@ rideshare_animation_b <-
 # i=1
 # cowplot::plot_grid(anim.data,g.progress(i))
 
-animate(rideshare_animation, duration=5, renderer = gifski_renderer())
+animate(rideshare_animation_b, duration=10, renderer = gifski_renderer())
+
+### modeling and purrr 
+
+bike.panel$hour <- bike.panel$hour_unit %>% hour()
+
+bike.Train <- filter(bike.panel, week < 25)
+bike.Test <- filter(bike.panel, week >= 25)
+
+### net regressoins
+reg1 <- lm(net ~  hour + dotw + Temperature, data=bike.Train)
+reg2 <- lm(net ~  station_name + dotw + Temperature, data=bike.Train)
+reg3 <- lm(net ~  station_name + hour + dotw + Temperature, data=bike.Train)
+reg4 <- lm(net ~  station_name + hour + dotw + Temperature + 
+           lagHour + lag2Hours + lag3Hours + lag12Hours + lag1day, data=bike.Train)
+
+bike.Test.weekNest <- 
+  as.data.frame(bike.Test) %>%
+  nest(-week) 
+
+
+model_pred <- function(dat, fit){
+  pred <- predict(fit, newdata = dat)}
+
+week_predictions <- 
+  bike.Test.weekNest %>% 
+  mutate(A_Time_FE = map(.x = data, fit = reg1, .f = model_pred),
+         B_Space_FE = map(.x = data, fit = reg2, .f = model_pred),
+         C_Space_Time_FE = map(.x = data, fit = reg3, .f = model_pred),
+         D_Space_Time_Lags = map(.x = data, fit = reg4, .f = model_pred))
+
+
+
+week_predictions <- week_predictions %>%  
+  gather(Regression, Prediction, -data, -week) %>% 
+  mutate(Observed = map(data, pull, net),
+         Absolute_Error = map2(Observed, Prediction,  ~ abs(.x - .y)),
+         MAE = map_dbl(Absolute_Error, mean),
+         sd_AE = map_dbl(Absolute_Error, sd)) 
+
+
+week_predictions %>%
+  dplyr::select(week, Regression, MAE) %>%
+  gather(Variable, MAE, -Regression, -week) %>%
+  ggplot(aes(week, MAE)) + 
+  geom_bar(aes(fill = Regression), position = "dodge", stat="identity") +
+  scale_fill_manual(values = palette5) +
+  labs(title = "Mean Absolute Errors by model specification and week") +
+  plotTheme()
+
+
+week_predictions %>% 
+  mutate(hour_unit = map(data, pull, hour_unit),
+         station_name = map(data, pull, station_name)) %>%
+  dplyr::select(hour_unit, station_name, Observed, Prediction, Regression) %>%
+  unnest() %>%
+  gather(Variable, Value, -Regression, -hour_unit, -station_name) %>%
+  group_by(Regression, Variable, hour_unit) %>%
+  summarize(Value = mean(Value)) %>%
+  ggplot(aes(hour_unit, Value, colour=Variable)) + geom_line(size = 1.1) + 
+  facet_wrap(~Regression, ncol=1) +
+  scale_colour_manual(values = palette2) +
+  labs(title = "Mean Predicted/Observed ride share by hourly interval", 
+       x = "Hour", y= "Rideshare Trips") +
+  plotTheme()
+
+
+##starts regresions
+reg1 <- lm(start_count ~  hour + dotw + Temperature, data=bike.Train)
+reg2 <- lm(start_count ~  station_name + dotw + Temperature, data=bike.Train)
+reg3 <- lm(start_count ~  station_name + hour + dotw + Temperature, data=bike.Train)
+reg4 <- lm(start_count ~  station_name + hour + dotw + Temperature + 
+             sclagHour + sclag2Hours + sclag3Hours + sclag12Hours + sclag1day, data=bike.Train)
+
+bike.Test.weekNest <- 
+  as.data.frame(bike.Test) %>%
+  nest(-week) 
+
+
+week_predictions <- 
+  bike.Test.weekNest %>% 
+  mutate(A_Time_FE = map(.x = data, fit = reg1, .f = model_pred),
+         B_Space_FE = map(.x = data, fit = reg2, .f = model_pred),
+         C_Space_Time_FE = map(.x = data, fit = reg3, .f = model_pred),
+         D_Space_Time_Lags = map(.x = data, fit = reg4, .f = model_pred))
+
+
+
+week_predictions <- week_predictions %>%  
+  gather(Regression, Prediction, -data, -week) %>% 
+  mutate(Observed = map(data, pull, start_count),
+         Absolute_Error = map2(Observed, Prediction,  ~ abs(.x - .y)),
+         MAE = map_dbl(Absolute_Error, mean),
+         sd_AE = map_dbl(Absolute_Error, sd)) 
+
+
+week_predictions %>%
+  dplyr::select(week, Regression, MAE) %>%
+  gather(Variable, MAE, -Regression, -week) %>%
+  ggplot(aes(week, MAE)) + 
+  geom_bar(aes(fill = Regression), position = "dodge", stat="identity") +
+  scale_fill_manual(values = palette5) +
+  labs(title = "Mean Absolute Errors by model specification and week") +
+  plotTheme()
+
+
+week_predictions %>% 
+  mutate(hour_unit = map(data, pull, hour_unit),
+         station_name = map(data, pull, station_name)) %>%
+  dplyr::select(hour_unit, station_name, Observed, Prediction, Regression) %>%
+  unnest(cols = c(hour_unit, station_name, Observed, Prediction)) %>%
+  gather(Variable, Value, -Regression, -hour_unit, -station_name) %>%
+  group_by(Regression, Variable, hour_unit) %>%
+  summarize(Value = mean(Value)) %>%
+  ggplot(aes(hour_unit, Value, colour=Variable)) + geom_line(size = 1.1) + 
+  facet_wrap(~Regression, ncol=1) +
+  scale_colour_manual(values = palette2) +
+  labs(title = "Mean Predicted/Observed ride share by hourly interval", 
+       x = "Hour", y= "Rideshare Trips") +
+  plotTheme()
+
+## cross validation
+
+reg1 <- lm(start_count ~  hour(hour_unit) + dotw + Temperature, data=bike.Train)
+
+
+reg.vars1 <- bike.panel %>% st_drop_geometry() %>% select(hour, dotw, Temperature) %>% colnames()
+reg.vars2 <- bike.panel %>% st_drop_geometry() %>% select(station_name, dotw, Temperature) %>% colnames()
+reg.vars3 <- bike.panel %>% st_drop_geometry() %>% select(station_name, hour, Temperature) %>% colnames()
+reg.vars4 <- bike.panel %>% st_drop_geometry() %>% select(station_name, hour, dotw, Temperature,
+                                                          sclagHour, sclag2Hours, sclag3Hours, sclag12Hours, sclag1day) %>% colnames()
+
+
+
+
+reg1.cv <- crossValidate(
+  dataset = bike.panel,
+  id = "station_name",
+  dependentVariable = "start_count",
+  indVariables = reg.vars1) %>%
+  dplyr::select(station_name, start_count, Prediction, geometry)
+
+reg2.cv <- crossValidate(
+  dataset = bike.panel,
+  id = "hour",
+  dependentVariable = "start_count",
+  indVariables = reg.vars2)%>%
+  dplyr::select(station_name, start_count, Prediction, geometry)
+
+reg3.cv <- crossValidate(
+  dataset = bike.panel,
+  id = "dotw",
+  dependentVariable = "start_count",
+  indVariables = reg.vars3)%>%
+  dplyr::select(dotw, start_count, Prediction, geometry)
+
+
+
+reg.summary <- 
+  rbind(
+    mutate(reg1.cv,           Error = Prediction - start_count,
+           Regression = "LOGO Time FE "),
+    
+    mutate(reg2.cv,        Error = Prediction - start_count,
+           Regression = "LOGO Spatial FE"),
+    
+    mutate(reg3.cv,    Error = Prediction - start_count,
+           Regression = "LOGO Space and Time FE")) %>% 
+    
+    #mutate(reg4.cv, Error = Prediction - start_count,
+     #      Regression = "LOGO Space + Time + Time Lags")) %>%
+  st_sf() 
+
+error_by_reg_and_fold <- 
+  reg.summary %>%
+  group_by(Regression, cvID) %>% 
+  summarize(Mean_Error = mean(Prediction - countBurglaries, na.rm = T),
+            MAE = mean(abs(Mean_Error), na.rm = T),
+            SD_MAE = mean(abs(Mean_Error), na.rm = T)) %>%
+  ungroup()
+
+error_by_reg_and_fold %>%
+  ggplot(aes(MAE)) + 
+  geom_histogram(bins = 30, colour="black", fill = "#FDE725FF") +
+  facet_wrap(~Regression) +  
+  geom_vline(xintercept = 0) + scale_x_continuous(breaks = seq(0, 8, by = 1)) + 
+  labs(title="Distribution of MAE", subtitle = "k-fold cross validation vs. LOGO-CV",
+       x="Mean Absolute Error", y="Count") +
+  plotTheme()
