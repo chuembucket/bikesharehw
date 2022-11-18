@@ -10,6 +10,7 @@ library(gridExtra)
 library(knitr)
 library(kableExtra)
 library(cowplot)
+library(geojsonR)
 
 options(tigris_class = "sf")
 source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
@@ -22,8 +23,8 @@ palette2 <- c("#6baed6","#08519c")
 rides <- read.csv("C:/Users/cchue/Documents/GIS/5thSq/IndegoMap/RideData/indego-trips-2016-q1.csv")
 
 cd <- "C:/Users/cchue/Documents/GIS/5thSq/IndegoMap/RideData/indego-trips"
-years <- c("2021")
-qs <- c("q1","q2","q3")
+years <- c("2022")
+qs <- c("q2")
 
 indegofull <- rides[0,]
 
@@ -61,8 +62,7 @@ statlatlong <- statlatlong %>% rename('Station_ID' = 'df.start_station',
                                       'lat'='df.start_lat',
                                       'lon'='df.start_lon')
 stations <- read.csv("C:/Users/cchue/Documents/GIS/5thSq/IndegoMap/indego-stations-2021-07-01.csv")
-nhoods <- read_sf("C:/Users/cchue/Documents/GIS/PhillyData/Neighborhoods_Philadelphia.shp") %>%
-  st_transform(crs = 4326)
+
 
 #statlatlong$Station_ID <- statlatlong$Station_ID %>% as.numeric()
 stats <- left_join(x = stations, y = statlatlong)
@@ -71,7 +71,23 @@ stats <- stats %>% rename('dateopen' = "Day.of.Go_live_date")
 
 
 stats <- stats %>% filter(!is.na(lat)) %>% st_as_sf(coords = c('lon','lat'),crs = (4326))
-stats <- st_join(stats, nhoods)
+
+
+###DOCK STATION SHIT
+
+stats_geojson<- FROM_GeoJson(url_file_string = 'https://kiosks.bicycletransit.workers.dev/phl')
+
+statdocks <- data.frame(totaldocks = rep(x=NA, 184), station_name = rep(x = NA,184))
+
+stats_geojson$features[[3]]$properties$name
+stats_geojson$features[[3]]$properties$totalDocks
+
+for(i in 1:184){
+  statdocks[i,] <- c(stats_geojson$features[[i]]$properties$totalDocks,
+                     stats_geojson$features[[i]]$properties$name)
+}
+
+stats <- left_join(stats, statdocks, by = c('Station_Name' = 'station_name'))
 
 
 #get time frame
@@ -101,7 +117,7 @@ indegofull <- rename(indegofull, end_station_name = 'Station_Name')
 
   
 
-indego5week <- indegofull %>% filter(year == 2021 & week %in% seq(22,26) & endweek  %in% seq(22,26))
+indego5week <- indegofull %>% filter(year == 2022 & week %in% seq(15,19) & endweek  %in% seq(15,19))
 
 
 
@@ -259,8 +275,8 @@ h <- bike.panel %>%
   group_by(station_name) %>% 
   summarize(total = sum(total),
             net = sum(net)) %>% .[order(-.$total),] %>%
-  mutate(stats5 = ifelse(total %in% quantile(.$total), 'y','n'))
-
+  mutate(stats5 = ifelse(total %in% quantile(.$total), 'y','n')) %>% 
+  left_join(statdocks)
 
 h1<-ggplot(h)+ 
   geom_bar(aes(y=total,x=reorder(station_name, total),
@@ -288,13 +304,13 @@ f<-st_drop_geometry(rbind(
   mutate(bike.Test, Legend = "Testing"))) %>%
   filter(station_name %in% c(h %>% filter(stats5 == 'y') %>% pull(station_name))) %>% 
   group_by(hour_unit, station_name) %>% 
-  summarize(Trip_Count = sum(Trip_Count), Legend = Legend, statname = Station_Name) %>% 
+  summarize(start_count = sum(start_count), Legend = Legend, statname = station_name) %>% 
   ungroup() 
 
-f$statname <- factor(f$statname, levels=h %>% filter(stats5 == 'y') %>% pull(Station_Name))
+f$statname <- factor(f$statname, levels=h %>% filter(stats5 == 'y') %>% pull(station_name))
   
   
-f1<-ggplot(f, aes(start_time_60, Trip_Count, colour = Legend)) + geom_line() +
+f1<-ggplot(f, aes(hour_unit,start_count, colour = Legend)) + geom_line() +
   scale_colour_manual(values = palette2) + 
   geom_vline(data = mondays, aes(xintercept = monday)) +
   facet_wrap(~statname, ncol =1)+
@@ -303,11 +319,23 @@ f1<-ggplot(f, aes(start_time_60, Trip_Count, colour = Legend)) + geom_line() +
        x="Starts per Hour", y="") +
   plotTheme() + theme(panel.grid.major = element_blank())    
 
-h2 <- plot_grid(h1,f1)
+plot_grid(h1,f1)
 
 ggdraw() +
   draw_plot(h2,height = 2)
 
+
+
+
+ggplot(h)+ 
+  geom_bar(aes(y=totalDocks,x=reorder(station_name, total),
+               fill = stats5), stat = 'identity')+
+  theme_minimal()+
+  theme(legend.position = 'none',
+        plot.title = element_text(hjust = .85, vjust=0))+
+  coord_flip()+
+  scale_fill_manual(values = c('#0085ca','#97d700'))+
+  labs(title='Ride Starts from Station between May 28st and July 1st', x = '', y = 'Total ride starts in date range')
 
 
 ##map
@@ -373,6 +401,7 @@ animate(rideshare_animation_b, duration=10, renderer = gifski_renderer())
 ### modeling and purrr 
 
 bike.panel$hour <- bike.panel$hour_unit %>% hour()
+bike.panel$day <- bike.panel$hour_unit %>% day()
 
 bike.Train <- filter(bike.panel, week < 25)
 bike.Test <- filter(bike.panel, week >= 25)
@@ -435,7 +464,7 @@ week_predictions %>%
   plotTheme()
 
 
-##starts regresions
+## start count regressions 
 reg1 <- lm(start_count ~  hour + dotw + Temperature, data=bike.Train)
 reg2 <- lm(start_count ~  station_name + dotw + Temperature, data=bike.Train)
 reg3 <- lm(start_count ~  station_name + hour + dotw + Temperature, data=bike.Train)
@@ -494,57 +523,44 @@ week_predictions %>%
 reg1 <- lm(start_count ~  hour(hour_unit) + dotw + Temperature, data=bike.Train)
 
 
-reg.vars1 <- bike.panel %>% st_drop_geometry() %>% select(hour, dotw, Temperature) %>% colnames()
-reg.vars2 <- bike.panel %>% st_drop_geometry() %>% select(station_name, dotw, Temperature) %>% colnames()
-reg.vars3 <- bike.panel %>% st_drop_geometry() %>% select(station_name, hour, Temperature) %>% colnames()
-reg.vars4 <- bike.panel %>% st_drop_geometry() %>% select(station_name, hour, dotw, Temperature,
-                                                          sclagHour, sclag2Hours, sclag3Hours, sclag12Hours, sclag1day) %>% colnames()
+
+#Neigborhood cross validation
+
+spatial.cv.vars <- bike.panel %>% st_drop_geometry() %>% select(hour, dotw, Temperature,
+                                                               sclagHour, sclag2Hours, sclag3Hours, sclag12Hours, sclag1day) %>% colnames()
 
 
-
-
-reg1.cv <- crossValidate(
+spatial.cv <- crossValidate(
   dataset = bike.panel,
   id = "station_name",
   dependentVariable = "start_count",
-  indVariables = reg.vars1) %>%
-  dplyr::select(station_name, start_count, Prediction, geometry)
+  indVariables = spatial.cv.vars) %>%
+  dplyr::select(cvID = station_name, start_count, Prediction, geometry)
 
-reg2.cv <- crossValidate(
+temporal.cv.vars <- bike.panel %>% st_drop_geometry() %>% select(station_name, hour, dotw, Temperature,
+                                                                sclagHour, sclag2Hours, sclag3Hours, sclag12Hours, sclag1day) %>% colnames()
+
+
+temporal.cv <- crossValidate(
   dataset = bike.panel,
-  id = "hour",
+  id = "day",
   dependentVariable = "start_count",
-  indVariables = reg.vars2)%>%
-  dplyr::select(station_name, start_count, Prediction, geometry)
-
-reg3.cv <- crossValidate(
-  dataset = bike.panel,
-  id = "dotw",
-  dependentVariable = "start_count",
-  indVariables = reg.vars3)%>%
-  dplyr::select(dotw, start_count, Prediction, geometry)
-
-
+  indVariables = temporal.cv.vars) %>%
+  dplyr::select(cvID = day, start_count, Prediction, geometry)
 
 reg.summary <- 
   rbind(
-    mutate(reg1.cv,           Error = Prediction - start_count,
-           Regression = "LOGO Time FE "),
+    mutate(spatial.cv,           Error = Prediction - start_count,
+           Regression = "Spatial CV"),
     
-    mutate(reg2.cv,        Error = Prediction - start_count,
-           Regression = "LOGO Spatial FE"),
-    
-    mutate(reg3.cv,    Error = Prediction - start_count,
-           Regression = "LOGO Space and Time FE")) %>% 
-    
-    #mutate(reg4.cv, Error = Prediction - start_count,
-     #      Regression = "LOGO Space + Time + Time Lags")) %>%
+    mutate(temporal.cv,        Error = Prediction - start_count,
+           Regression = "Temporal CV")) %>%
   st_sf() 
 
 error_by_reg_and_fold <- 
   reg.summary %>%
   group_by(Regression, cvID) %>% 
-  summarize(Mean_Error = mean(Prediction - countBurglaries, na.rm = T),
+  summarize(Mean_Error = mean(Prediction - start_count, na.rm = T),
             MAE = mean(abs(Mean_Error), na.rm = T),
             SD_MAE = mean(abs(Mean_Error), na.rm = T)) %>%
   ungroup()
@@ -554,6 +570,9 @@ error_by_reg_and_fold %>%
   geom_histogram(bins = 30, colour="black", fill = "#FDE725FF") +
   facet_wrap(~Regression) +  
   geom_vline(xintercept = 0) + scale_x_continuous(breaks = seq(0, 8, by = 1)) + 
-  labs(title="Distribution of MAE", subtitle = "k-fold cross validation vs. LOGO-CV",
+  labs(title="Distribution of MAE",
        x="Mean Absolute Error", y="Count") +
   plotTheme()
+
+
+
